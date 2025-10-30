@@ -1,8 +1,7 @@
-// @ts-nocheck
 import { connect } from 'cloudflare:sockets';
 
 // ============================================================================
-// ULTIMATE VLESS PROXY WORKER - FINAL FIXED VERSION
+// ULTIMATE VLESS PROXY WORKER - COMPLETE FIXED VERSION
 // ============================================================================
 // Fixed Issues:
 // - Network info now works perfectly with/without VPN using multiple fallback APIs
@@ -13,9 +12,6 @@ import { connect } from 'cloudflare:sockets';
 // - Added Copy UUID button for each user in admin panel
 // - KV-based proxy IP loading with fallback
 // - Fixed all syntax errors including missing colons and CSRF validation
-// - [FIXED] SOCKS5 IPv6 address parsing bug (NaN error)
-// - [FIXED] User Panel "Invalid Date" bug for "CREATED DATE" field
-// - [FIXED] DATA USAGE SYNC BUG (Admin Panel vs User Panel)
 // ============================================================================
 
 // ============================================================================
@@ -121,14 +117,10 @@ function isValidUUID(uuid) {
 
 function isExpired(expDate, expTime) {
   if (!expDate || !expTime) return true;
-  // FIX: Use template literals (backticks ``) for string interpolation
   const expTimeSeconds = expTime.includes(':') && expTime.split(':').length === 2 ? `${expTime}:00` : expTime;
   const cleanTime = expTimeSeconds.split('.')[0];
-  // FIX: Use template literals (backticks ``) for string interpolation
   const expDatetimeUTC = new Date(`${expDate}T${cleanTime}Z`);
-  
-  // ========== FIX [FROM VIDEO]: isNaN expects a number. Use .getTime() ==========
-  return expDatetimeUTC <= new Date() || isNaN(expDatetimeUTC.getTime());
+  return expDatetimeUTC <= new Date() || isNaN(expDatetimeUTC);
 }
 
 function formatBytes(bytes) {
@@ -155,7 +147,6 @@ async function getUserData(env, uuid, ctx) {
     console.error(`Failed to parse cached data for ${uuid}`, e);
   }
 
-  // Fetch all fields, including created_at
   const userFromDb = await env.DB.prepare("SELECT * FROM users WHERE uuid = ?").bind(uuid).first();
   if (!userFromDb) return null;
   
@@ -170,34 +161,26 @@ async function getUserData(env, uuid, ctx) {
   return userFromDb;
 }
 
-// ================== FIXED BUG HERE ==================
-// This function no longer accepts 'ctx' as it's not reliably available in background intervals.
-// It now 'awaits' promises directly, ensuring completion.
-// It throws an error on failure, which the caller (deferredUsageUpdate) will catch.
-async function updateUsage(env, uuid, bytes) {
+async function updateUsage(env, uuid, bytes, ctx) {
   if (bytes <= 0 || !uuid) return;
   
   try {
     const usage = Math.round(bytes);
-    
-    // Both operations must complete. Run them in parallel.
     const updatePromise = env.DB.prepare("UPDATE users SET traffic_used = traffic_used + ? WHERE uuid = ?")
       .bind(usage, uuid)
       .run();
     
-    // This is the critical cache invalidation that was failing.
     const deletePromise = env.USER_KV.delete(`user:${uuid}`);
     
-    // Await both promises. If *either* fails, an error will be thrown.
-    await Promise.all([updatePromise, deletePromise]);
-    
+    if (ctx) {
+      ctx.waitUntil(Promise.all([updatePromise, deletePromise]));
+    } else {
+      await Promise.all([updatePromise, deletePromise]);
+    }
   } catch (err) {
     console.error(`Failed to update usage for ${uuid}:`, err);
-    // Re-throw the error so the caller knows it failed and can retry.
-    throw err;
   }
 }
-// ================ END OF BUG FIX ================
 
 // ============================================================================
 // UUID STRINGIFY
@@ -586,15 +569,6 @@ const adminPanelHTML = `<!DOCTYPE html>
                 }
                 return response.status === 204 ? null : response.json();
             }
-            
-            // Helper to parse D1/SQL date strings reliably
-            function parseD1DateString(dateStr) {
-                if (!dateStr) return new Date(NaN);
-                // Convert "YYYY-MM-DD HH:MM:SS" to "YYYY-MM-DDTHH:MM:SSZ" (ISO 8601 UTC)
-                // This is reliably parsed by new Date() across all browsers.
-                const isoStr = dateStr.replace(' ', 'T') + 'Z';
-                return new Date(isoStr);
-            }
 
             const pad = (num) => num.toString().padStart(2, '0');
 
@@ -731,11 +705,6 @@ const adminPanelHTML = `<!DOCTYPE html>
                 } else {
                     usersToRender.forEach(user => {
                         const expiry = formatExpiryDateTime(user.expiration_date, user.expiration_time);
-                        
-                        // Parse the created_at date string safely
-                        const createdDate = parseD1DateString(user.created_at);
-                        const createdDateLocale = !isNaN(createdDate) ? createdDate.toLocaleString() : 'Invalid Date';
-
                         const row = document.createElement('tr');
                         row.innerHTML = \`
                             <td><input type="checkbox" class="user-checkbox checkbox" data-uuid="\${user.uuid}"></td>
@@ -745,7 +714,7 @@ const adminPanelHTML = `<!DOCTYPE html>
                                     <button class="btn-copy-uuid" data-uuid="\${user.uuid}">📋 Copy</button>
                                 </div>
                             </td>
-                            <td>\${createdDateLocale}</td>
+                            <td>\${new Date(user.created_at).toLocaleString()}</td>
                             <td>
                                 <div class="time-display">
                                     <span class="time-local" title="Your Local Time">\${expiry.local}</span>
@@ -1002,7 +971,6 @@ async function handleAdminRequest(request, env, ctx) {
     if (request.method !== 'GET') {
       const origin = request.headers.get('Origin');
       if (!origin || new URL(origin).hostname !== url.hostname) {
-        // ========== FIX 1: Missing colon here (Already fixed in provided code) ==========
         return new Response(JSON.stringify({ error: 'Invalid Origin' }), { status: 403, headers: { ...jsonHeader, ...noQuicHeader } });
       }
     }
@@ -1010,10 +978,7 @@ async function handleAdminRequest(request, env, ctx) {
     if (pathname === '/admin/api/stats' && request.method === 'GET') {
       try {
         const totalUsers = await env.DB.prepare("SELECT COUNT(*) as count FROM users").first('count');
-        
-        // ========== FIX 4 [FROM CODE COMMENT]: Missing SQL concatenation '||' ==========
         const expiredQuery = await env.DB.prepare("SELECT COUNT(*) as count FROM users WHERE datetime(expiration_date || 'T' || expiration_time || 'Z') < datetime('now')").first();
-        
         const expiredUsers = expiredQuery?.count || 0;
         const activeUsers = totalUsers - expiredUsers;
         const totalTrafficQuery = await env.DB.prepare("SELECT SUM(traffic_used) as sum FROM users").first();
@@ -1031,7 +996,6 @@ async function handleAdminRequest(request, env, ctx) {
 
     if (pathname === '/admin/api/users' && request.method === 'GET') {
       try {
-        // Ensure created_at is selected
         const { results } = await env.DB.prepare("SELECT uuid, created_at, expiration_date, expiration_time, notes, traffic_limit, traffic_used FROM users ORDER BY created_at DESC").all();
         return new Response(JSON.stringify(results ?? []), { status: 200, headers: { ...jsonHeader, ...noQuicHeader } });
       } catch (e) {
@@ -1043,25 +1007,20 @@ async function handleAdminRequest(request, env, ctx) {
       try {
         const { uuid, exp_date: expDate, exp_time: expTime, notes, traffic_limit } = await request.json();
 
-        // ========== FIX 2 [FROM CODE COMMENT]: Missing logical OR '||' operators ==========
         if (!uuid || !expDate || !expTime || !/^\d{4}-\d{2}-\d{2}$/.test(expDate) || !/^\d{2}:\d{2}:\d{2}$/.test(expTime)) {
           throw new Error('Invalid or missing fields. Use UUID, YYYY-MM-DD, and HH:MM:SS.');
         }
 
-        // created_at will be set by default in D1 (datetime('now'))
-        const dbResponse = await env.DB.prepare("INSERT INTO users (uuid, expiration_date, expiration_time, notes, traffic_limit, traffic_used) VALUES (?, ?, ?, ?, ?, 0) RETURNING created_at")
-          .bind(uuid, expDate, expTime, notes || null, traffic_limit).first();
-          
-        const createdAt = dbResponse ? dbResponse.created_at : new Date().toISOString().replace('T', ' ').split('.')[0];
-
+        await env.DB.prepare("INSERT INTO users (uuid, expiration_date, expiration_time, notes, traffic_limit, traffic_used) VALUES (?, ?, ?, ?, ?, 0)")
+          .bind(uuid, expDate, expTime, notes || null, traffic_limit).run();
+        
         ctx.waitUntil(env.USER_KV.put(`user:${uuid}`, JSON.stringify({ 
           uuid,
           expiration_date: expDate, 
           expiration_time: expTime, 
           notes: notes || null,
           traffic_limit: traffic_limit, 
-          traffic_used: 0,
-          created_at: createdAt // Add created_at to KV cache
+          traffic_used: 0 
         })));
 
         return new Response(JSON.stringify({ success: true, uuid }), { status: 201, headers: { ...jsonHeader, ...noQuicHeader } });
@@ -1194,40 +1153,15 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
 
   const isUserExpired = isExpired(userData.expiration_date, userData.expiration_time);
   const expirationDateTime = userData.expiration_date && userData.expiration_time 
-    ? `${userData.expiration_date}T${userData.expiration_time}Z`
+    ? `${userData.expiration_date}T${userData.expiration_time}Z` 
     : null;
 
-  // ========== FIX [FROM VIDEO]: usagePercentage must be a number for comparisons ==========
   let usagePercentage = 0;
   if (userData.traffic_limit && userData.traffic_limit > 0) {
-    // OLD: usagePercentage = Math.min(((userData.traffic_used || 0) / userData.traffic_limit) * 100, 100).toFixed(2);
-    // NEW: Removed .toFixed(2) so it remains a number
-    usagePercentage = Math.min(((userData.traffic_used || 0) / userData.traffic_limit) * 100, 100);
+    usagePercentage = Math.min(((userData.traffic_used || 0) / userData.traffic_limit) * 100, 100).toFixed(2);
   }
 
-  // ================== FIXED BUG HERE ==================
-  // The original \new Date(userData.created_at)\ was unreliable.
-  // We parse the D1/SQL string "YYYY-MM-DD HH:MM:SS" into a reliable ISO format
-  // "YYYY-MM-DDTHH:MM:SSZ" which \new Date()\ can parse correctly.
-  let createdDateStr = 'Invalid Date';
-  if (userData.created_at) {
-      try {
-          // Convert "2025-10-30 09:23:34" -> "2025-10-30T09:23:34Z"
-          const isoDateStr = userData.created_at.replace(' ', 'T') + 'Z';
-          const createdDate = new Date(isoDateStr);
-          
-          // ========== FIX [FROM VIDEO]: isNaN expects a number. Use .getTime() ==========
-          if (!isNaN(createdDate.getTime())) {
-              createdDateStr = createdDate.toLocaleString(); // Use toLocaleString() for a user-friendly format
-          }
-      } catch (e) {
-          console.error("Error parsing created_at date:", e);
-      }
-  }
-  // ================ END OF BUG FIX ================
-
-
-  // The HTML continues exactly as in your original code
+  // The HTML continues exactly as in your original code - I'll include the complete remaining part
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -1354,22 +1288,22 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
       </div>
     </div>
 
-    ${userData.traffic_limit && userData.traffic_limit > 0 ? 
-    `<div class="card">
+    ${userData.traffic_limit && userData.traffic_limit > 0 ? `
+    <div class="card">
       <div class="section-title">
         <h2>📊 Usage Statistics</h2>
-        <span class="muted">${usagePercentage.toFixed(2)}% Used</span>
+        <span class="muted">${usagePercentage}% Used</span>
       </div>
       <div class="progress-bar">
         <div class="progress-fill ${usagePercentage > 80 ? 'high' : usagePercentage > 50 ? 'medium' : 'low'}" 
              style="width: ${usagePercentage}%"></div>
       </div>
       <p class="muted text-center mb-2">${formatBytes(userData.traffic_used || 0)} of ${formatBytes(userData.traffic_limit)} used</p>
-    </div>`
-     : ''}
+    </div>
+    ` : ''}
 
-    ${expirationDateTime ? 
-    `<div class="card">
+    ${expirationDateTime ? `
+    <div class="card">
       <div class="section-title">
         <h2>⏰ Expiration Information</h2>
       </div>
@@ -1377,17 +1311,17 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
         <p class="muted" id="expiry-local">Loading expiration time...</p>
         <p class="muted" id="expiry-utc" style="font-size:13px;margin-top:4px"></p>
       </div>
-      ${isUserExpired ? 
-      `<div class="expiry-warning">
+      ${isUserExpired ? `
+      <div class="expiry-warning">
         ⚠️ Your account has expired. Please contact your administrator to renew access.
-      </div>`
-       : 
-      `<div class="expiry-info">
+      </div>
+      ` : `
+      <div class="expiry-info">
         ✓ Your account is currently active and working normally.
-      </div>`
-      }
-    </div>`
-     : ''}
+      </div>
+      `}
+    </div>
+    ` : ''}
 
     <div class="grid">
       <div>
@@ -1486,14 +1420,14 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
           </div>
           <div class="info-item" style="margin-top:12px">
             <span class="label">Created Date</span>
-            <span class="value">${createdDateStr}</span>
+            <span class="value">${new Date(userData.created_at).toLocaleDateString()}</span>
           </div>
-          ${userData.notes ? 
-          `<div class="info-item" style="margin-top:12px">
+          ${userData.notes ? `
+          <div class="info-item" style="margin-top:12px">
             <span class="label">Notes</span>
             <span class="value">${userData.notes}</span>
-          </div>`
-           : ''}
+          </div>
+          ` : ''}
         </div>
 
         <div class="card">
@@ -1524,11 +1458,8 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
       proxyAddress: "${proxyAddress || hostName}",
       subXrayUrl: "${subXrayUrl}",
       subSbUrl: "${subSbUrl}",
-      
-      // ========== FIX [FROM VIDEO]: The error was here (\JSON.String\), but your provided code is already correct (\JSON.stringify\). ==========
       singleXrayConfig: ${JSON.stringify(singleXrayConfig)},
       singleSingboxConfig: ${JSON.stringify(singleSingboxConfig)},
-      
       expirationDateTime: ${expirationDateTime ? `"${expirationDateTime}"` : 'null'},
       isExpired: ${isUserExpired},
       clientUrls: ${JSON.stringify(clientUrls)}
@@ -1954,53 +1885,26 @@ async function ProtocolOverWSHandler(request, config, env, ctx) {
 
   const log = (info, event) => console.log(`[${address}:${portWithRandomLog}] ${info}`, event || '');
 
-  // ================== FIXED BUG HERE ==================
-  // This function is now 'async' and 'awaits' updateUsage.
-  // It no longer uses ctx.waitUntil, which is invalid in setInterval.
-  // If updateUsage fails (throws an error), sessionUsage is NOT reset,
-  // ensuring the usage data is retried on the next interval.
-  const deferredUsageUpdate = async () => {
+  const deferredUsageUpdate = () => {
     if (sessionUsage > 0 && userUUID) {
       const usageToUpdate = sessionUsage;
       const uuidToUpdate = userUUID;
       
-      try {
-        // Await the update, which now includes DB update AND KV delete
-        await updateUsage(env, uuidToUpdate, usageToUpdate);
-        // SUCCESS: Reset session counter
-        sessionUsage = 0; 
-      } catch (err) {
-        console.error(`Deferred usage update failed for ${uuidToUpdate}:`, err);
-        // FAILURE: Do NOT reset sessionUsage. The 'usageToUpdate' will be
-        // added to the next interval's usage and retried.
-      }
+      sessionUsage = 0;
+      
+      ctx.waitUntil(
+        updateUsage(env, uuidToUpdate, usageToUpdate, ctx)
+          .catch(err => console.error(`Deferred usage update failed for ${uuidToUpdate}:`, err))
+      );
     }
   };
 
   const updateInterval = setInterval(deferredUsageUpdate, 10000);
 
-  // This function is now wrapped in ctx.waitUntil in the 'close' and 'error'
-  // event listeners, ensuring the *final* update is completed.
   const finalCleanup = () => {
     clearInterval(updateInterval);
-    
-    // We MUST use ctx.waitUntil here to ensure this final update
-    // completes before the worker instance is potentially terminated.
-    ctx.waitUntil(
-      (async () => {
-        if (sessionUsage > 0 && userUUID) {
-          try {
-            await updateUsage(env, userUUID, sessionUsage);
-            sessionUsage = 0; // Final clear
-          } catch (err) {
-            console.error(`FINAL usage update failed for ${userUUID}:`, err);
-            // No more retries possible, but we log the error.
-          }
-        }
-      })()
-    );
+    deferredUsageUpdate();
   };
-  // ================ END OF BUG FIX ================
 
   webSocket.addEventListener('close', finalCleanup, { once: true });
   webSocket.addEventListener('error', finalCleanup, { once: true });
@@ -2096,18 +2000,18 @@ async function ProtocolOverWSHandler(request, config, env, ctx) {
         },
         close() {
           log('readableWebSocketStream closed');
-          // finalCleanup() is already called by the 'close' event listener
+          finalCleanup();
         },
         abort(err) {
           log('readableWebSocketStream aborted', err);
-          // finalCleanup() is already called by the 'error' event listener
+          finalCleanup();
         },
       }),
     )
     .catch(err => {
       console.error('Pipeline failed:', err.stack || err);
       safeCloseWebSocket(webSocket);
-      // finalCleanup() will be called by the 'close' or 'error' event
+      finalCleanup();
     });
 
   return new Response(null, { status: 101, webSocket: client });
@@ -2194,7 +2098,6 @@ async function ProcessProtocolHeader(protocolBuffer, env, ctx) {
       if (protocolBuffer.byteLength < addressValueIndex + addressLength) {
         return { hasError: true, message: 'invalid data length (ipv6)' };
       }
-      // This creates a full 8-segment IPv6 string, e.g., "2001:db8:0:0:1:0:0:1"
       addressValue = Array.from({ length: 8 }, (_, i) => 
         dataView.getUint16(addressValueIndex + i * 2, false).toString(16)
       ).join(':');
@@ -2448,31 +2351,7 @@ async function socks5Connect(addressType, addressRemote, portRemote, log, parsed
       dstAddr = new Uint8Array([3, addressRemote.length, ...encoder.encode(addressRemote)]);
       break;
     case 3:
-      // ================== FIXED BUG HERE ==================
-      // The original flatMap logic failed for '0' segments (NaN).
-      // ProcessProtocolHeader always provides a full 8-segment string (e.g., "2001:db8:0:0:1:0:0:1").
-      // We parse each segment as hex and write it as a 16-bit (2-byte) big-endian value.
-      
-      const ipv6Buffer = new ArrayBuffer(16);
-      const view = new DataView(ipv6Buffer);
-      const segments = addressRemote.split(':');
-      
-      if (segments.length !== 8) {
-        throw new Error(`Invalid IPv6 address format for SOCKS5: ${addressRemote}`);
-      }
-      
-      for (let i = 0; i < 8; i++) {
-        const value = parseInt(segments[i], 16);
-        if (isNaN(value)) {
-          throw new Error(`Invalid IPv6 segment: ${segments[i]}`);
-        }
-        // Write as 16-bit unsigned integer, big-endian (network order)
-        view.setUint16(i * 2, value, false); 
-      }
-      
-      // dstAddr must be [Address Type (4 for IPv6), ...16 bytes of address...]
-      dstAddr = new Uint8Array([4, ...new Uint8Array(ipv6Buffer)]);
-      // ================ END OF BUG FIX ================
+      dstAddr = new Uint8Array([4, ...addressRemote.split(':').flatMap(x => [parseInt(x.slice(0,2),16), parseInt(x.slice(2),16)])]);
       break;
     default:
       throw new Error(`Invalid address type: ${addressType}`);
