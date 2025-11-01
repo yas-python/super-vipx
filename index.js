@@ -1,5 +1,24 @@
 // ============================================================================
-// ULTIMATE VLESS PROXY WORKER - COMPLETE SECURED VERSION (V5.2 - LINTER/TS FIXED)
+// ULTIMATE VLESS PROXY WORKER - COMPLETE SECURED VERSION (V5.3 - REFINED)
+// ============================================================================
+// 
+// V5.3 (توسط جمینای) - اصلاحات و رفع اشکال:
+//
+// 1. (اصلاح حیاتی) `handleIpSubscription`:
+//    - در نسخه 5.2، `links.join('\n')` به `links.join('\\n')` تغییر کرده بود تا یک خطای Linter (ts(1002)) برطرف شود.
+//    - اما این "اصلاح" باعث ایجاد یک باگ منطقی می‌شد. `btoa('a\\nb')` یک رشته Base64 تولید می‌کند که پس از رمزگشایی، به `a\nb` (حاوی بک‌اسلش و حرف n) تبدیل می‌شود، نه یک خط جدید.
+//    - کلاینت‌های اشتراک (Subscription) انتظار لینک‌های جدا شده با خط جدید (newline) را دارند.
+//    - **اصلاح:** ما آن را به `links.join('\n')` برگرداندیم که رفتار صحیح است. خطای Linter در محیط واقعی Cloudflare Worker مشکلی ایجاد نمی‌کند.
+//
+// 2. (اصلاح حیاتی) `socks5Connect`:
+//    - منطق رسیدگی به `addressType === 3` (آدرس‌های IPv6) ناقص بود.
+//    - کد قبلی آدرس‌های IPv6 فشرده (مانند `::1`) را به درستی به یک آرایه 16 بایتی مورد نیاز SOCKS5 تبدیل نمی‌کرد.
+//    - **اصلاح:** یک تابع کمکی `parseIPv6` اضافه شد که آدرس‌های IPv6 (شامل فرمت‌های فشرده) را به درستی تجزیه و به 16 بایت تبدیل می‌کند. این کار اتصال SOCKS5 از طریق IPv6 را ممکن می‌سازد.
+//
+// 3. (بررسی) `V5.2 Linter/TS Fixes`:
+//    - تمامی اصلاحات ذکر شده در هدر V5.2 (مربوط به `isExpired`, `isSuspiciousIP` و `handleUserPanel`) بررسی و تأیید شدند که صحیح و در کد اعمال شده‌اند.
+//
+// - تمام قابلیت‌های امنیتی و عملکردی نسخه V5.2 حفظ شده‌اند.
 // ============================================================================
 // V5.2 Changes (by AI):
 // - Fixed all 8 TypeScript/Linter errors from the user's video.
@@ -229,7 +248,7 @@ function isExpired(expDate, expTime) {
   const expTimeSeconds = expTime.includes(':') && expTime.split(':').length === 2 ? `${expTime}:00` : expTime;
   const cleanTime = expTimeSeconds.split('.')[0];
   const expDatetimeUTC = new Date(`${expDate}T${cleanTime}Z`);
-  // [FIX 1] Changed isNaN(expDatetimeUTC) to isNaN(expDatetimeUTC.getTime())
+  // [FIX 1 (V5.2)] Changed isNaN(expDatetimeUTC) to isNaN(expDatetimeUTC.getTime())
   // This correctly checks if the Date object is valid.
   return expDatetimeUTC <= new Date() || isNaN(expDatetimeUTC.getTime());
 }
@@ -303,7 +322,7 @@ async function updateUsage(env, uuid, bytes, ctx) {
 async function isSuspiciousIP(ip, scamalyticsConfig, threshold = CONST.SCAMALYTICS_THRESHOLD) {
   if (!scamalyticsConfig.username || !scamalyticsConfig.apiKey) return false; // Fail-open if not configured
 
-  // [FIX 2] Implemented AbortController for fetch timeout
+  // [FIX 2 (V5.2)] Implemented AbortController for fetch timeout
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
 
@@ -497,7 +516,7 @@ function stringify(arr, offset = 0) {
 // ============================================================================
 
 function generateRandomPath(length = 12, query = '') {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz01023456789';
   let result = '';
   for (let i = 0; i < length; i++) {
     result += chars.charAt(Math.floor(Math.random() * chars.length));
@@ -579,8 +598,10 @@ async function handleIpSubscription(core, userID, hostName) {
   const headers = new Headers({ 'Content-Type': 'text/plain;charset=utf-8' });
   addSecurityHeaders(headers, null, {}); // Add security headers to subscription response
 
-  // [FIX 3] Changed '\n' to '\\n' to create a valid string literal
-  return new Response(btoa(links.join('\\n')), { headers });
+  // [FIX 3 (V5.3)] Reverted to `links.join('\n')`.
+  // The V5.2 fix `links.join('\\n')` was incorrect. Clients expect newline-separated
+  // links after b64decode, not literal `\n` characters.
+  return new Response(btoa(links.join('\n')), { headers });
 }
 
 // ============================================================================
@@ -1652,7 +1673,7 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
 
   let usagePercentage = 0;
   if (userData.traffic_limit && userData.traffic_limit > 0) {
-    // [FIX 4] Removed .toFixed(2) here. usagePercentage is kept as a number.
+    // [FIX 4 (V5.2)] Removed .toFixed(2) here. usagePercentage is kept as a number.
     usagePercentage = Math.min(((userData.traffic_used || 0) / userData.traffic_limit) * 100, 100);
   }
 
@@ -1787,11 +1808,11 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
     `<div class="card">
       <div class="section-title">
         <h2>📊 Usage Statistics</h2>
-        <!-- [FIX 6] Applied .toFixed(2) here for display -->
+        <!-- [FIX 4 (V5.2) Applied] .toFixed(2) is applied here for display -->
         <span class="muted">${usagePercentage.toFixed(2)}% Used</span>
       </div>
       <div class="progress-bar">
-        <!-- [FIX 5] Applied .toFixed(2) here for display -->
+        <!-- [FIX 4 (V5.2) Applied] .toFixed(2) is applied here for display -->
         <div class="progress-fill ${usagePercentage > 80 ? 'high' : usagePercentage > 50 ? 'medium' : 'low'}" 
              style="width: ${usagePercentage.toFixed(2)}%"></div>
       </div>
@@ -2834,6 +2855,43 @@ async function createDnsPipeline(webSocket, vlessResponseHeader, log, trafficCal
   };
 }
 
+/**
+ * [V5.3 FIX] Helper function to parse IPv6 address into a 16-byte Uint8Array.
+ * This correctly handles compressed formats (e.g., ::1, 2001:db8::1).
+ * @param {string} ipv6 - The IPv6 address string.
+ * @returns {Uint8Array} - A 16-byte array.
+ */
+function parseIPv6(ipv6) {
+    const buffer = new ArrayBuffer(16);
+    const view = new DataView(buffer);
+    
+    // 1. Expand ::
+    const parts = ipv6.split('::');
+    let left = parts[0] ? parts[0].split(':') : [];
+    let right = parts[1] ? parts[1].split(':') : [];
+    
+    if (left.length === 1 && left[0] === '') left = [];
+    if (right.length === 1 && right[0] === '') right = [];
+    
+    const missing = 8 - (left.length + right.length);
+    const expansion = [];
+    if (missing > 0) {
+        for (let i = 0; i < missing; i++) {
+            expansion.push('0000');
+        }
+    }
+    
+    const hextets = [...left, ...expansion, ...right];
+    
+    // 2. Convert hextets to bytes
+    for (let i = 0; i < 8; i++) {
+        const val = parseInt(hextets[i] || '0', 16);
+        view.setUint16(i * 2, val, false); // false for big-endian
+    }
+    
+    return new Uint8Array(buffer);
+}
+
 async function socks5Connect(addressType, addressRemote, portRemote, log, parsedSocks5Address) {
   const { username, password, hostname, port } = parsedSocks5Address;
   const socket = connect({ hostname, port });
@@ -2862,11 +2920,17 @@ async function socks5Connect(addressType, addressRemote, portRemote, log, parsed
       dstAddr = new Uint8Array([3, addressRemote.length, ...encoder.encode(addressRemote)]);
       break;
     case 3:
-      dstAddr = new Uint8Array([4, ...addressRemote.split(':').flatMap(x => {
-        if (x === '') return [0,0]; // Handle empty parts in IPv6 from compression
-        const part = x.padStart(4, '0');
-        return [parseInt(part.slice(0, 2), 16), parseInt(part.slice(2), 16)];
-      })]);
+      // [FIX 2 (V5.3)] Robust IPv6 parsing for SOCKS5
+      // The previous implementation did not correctly handle IPv6 compression (::)
+      // or produce a 16-byte array.
+      const ipv6Bytes = parseIPv6(addressRemote);
+      if (ipv6Bytes.length !== 16) {
+          throw new Error(`Failed to parse IPv6 address: ${addressRemote}`);
+      }
+      // Create a 17-byte array: 1 byte for type + 16 bytes for address
+      dstAddr = new Uint8Array(1 + 16); 
+      dstAddr[0] = 4; // SOCKS5 address type IPv6
+      dstAddr.set(ipv6Bytes, 1);
       break;
     default:
       throw new Error(`Invalid address type: ${addressType}`);
