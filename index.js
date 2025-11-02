@@ -1,46 +1,40 @@
 // ============================================================================
-// ULTIMATE VLESS PROXY WORKER - COMPLETE SECURED VERSION (V5.3 - REFINED)
+// ULTIMATE VLESS PROXY WORKER - COMPLETE SECURED VERSION (V5.4 - REFINED)
 // ============================================================================
-// 
+//
+// V5.4 (توسط جمینای) - اصلاحات بر اساس درخواست کاربر:
+//
+// 1. (اصلاح QR Code) `handleUserPanel`:
+//    - در ویدیو، QR Code لود نمی‌شد. این می‌تواند به دلیل خطای Mixed Content (بارگیری https در صفحه http) باشد.
+//    - **اصلاح:** URL فراخوانی `api.qrserver.com` از `https://` به `//` (پروتکل-نسبی) تغییر یافت تا با پروتکل صفحه‌ی اصلی (http یا https) مطابقت داشته باشد.
+//
+// 2. (اصلاح آمار مصرف) `handleUserPanel`:
+//    - کاربر درخواست آمار دقیق‌تر و "هوشمندتر" را داشت. نمایش "0.00%" برای مصرف‌های بسیار کم (مانند 500KB از 1TB) گیج‌کننده بود.
+//    - **اصلاح:** منطق `usagePercentageDisplay` اضافه شد:
+//      - اگر مصرف 0 باشد، `0%` نمایش داده می‌شود.
+//      - اگر مصرف بین 0 تا 0.01 درصد باشد، `< 0.01%` نمایش داده می‌شود.
+//      - در غیر این صورت، با دو رقم اعشار نمایش داده می‌شود (مثل `25.42%`).
+//
+// 3. (اصلاح واکنش‌گرایی) `adminPanelHTML`:
+//    - پنل ادمین در موبایل (طبق ویدیو) واکنش‌گرا نبود و جدول باعث اسکرول کل صفحه می‌شد.
+//    - **اصلاح:**
+//      - یک کلاس `.table-wrapper` با `overflow-x: auto` دور جدول اضافه شد.
+//      - قوانین CSS در `@media (max-width: 768px)` اضافه و تقویت شد تا:
+//        - فرم "Create User" ('.form-grid') به صورت ستونی (1fr) درآید.
+//        - پدینگ و مارجین کانتینر و کارت‌ها برای موبایل بهینه‌سازی شود.
+//        - خود جدول (`.table-wrapper`) به‌صورت افقی اسکرول بخورد و کل صفحه را خراب نکند.
+//
+// - تمام قابلیت‌های امنیتی و عملکردی نسخه V5.3 حفظ شده‌اند.
+// ============================================================================
 // V5.3 (توسط جمینای) - اصلاحات و رفع اشکال:
 //
 // 1. (اصلاح حیاتی) `handleIpSubscription`:
-//    - در نسخه 5.2، `links.join('\n')` به `links.join('\\n')` تغییر کرده بود تا یک خطای Linter (ts(1002)) برطرف شود.
-//    - اما این "اصلاح" باعث ایجاد یک باگ منطقی می‌شد. `btoa('a\\nb')` یک رشته Base64 تولید می‌کند که پس از رمزگشایی، به `a\nb` (حاوی بک‌اسلش و حرف n) تبدیل می‌شود، نه یک خط جدید.
-//    - کلاینت‌های اشتراک (Subscription) انتظار لینک‌های جدا شده با خط جدید (newline) را دارند.
-//    - **اصلاح:** ما آن را به `links.join('\n')` برگرداندیم که رفتار صحیح است. خطای Linter در محیط واقعی Cloudflare Worker مشکلی ایجاد نمی‌کند.
+//    - در نسخه 5.2، `links.join('\n')` به `links.join('\\n')` تغییر کرده بود.
+//    - **اصلاح:** ما آن را به `links.join('\n')` برگرداندیم که رفتار صحیح است.
 //
 // 2. (اصلاح حیاتی) `socks5Connect`:
 //    - منطق رسیدگی به `addressType === 3` (آدرس‌های IPv6) ناقص بود.
-//    - کد قبلی آدرس‌های IPv6 فشرده (مانند `::1`) را به درستی به یک آرایه 16 بایتی مورد نیاز SOCKS5 تبدیل نمی‌کرد.
-//    - **اصلاح:** یک تابع کمکی `parseIPv6` اضافه شد که آدرس‌های IPv6 (شامل فرمت‌های فشرده) را به درستی تجزیه و به 16 بایت تبدیل می‌کند. این کار اتصال SOCKS5 از طریق IPv6 را ممکن می‌سازد.
-//
-// 3. (بررسی) `V5.2 Linter/TS Fixes`:
-//    - تمامی اصلاحات ذکر شده در هدر V5.2 (مربوط به `isExpired`, `isSuspiciousIP` و `handleUserPanel`) بررسی و تأیید شدند که صحیح و در کد اعمال شده‌اند.
-//
-// - تمام قابلیت‌های امنیتی و عملکردی نسخه V5.2 حفظ شده‌اند.
-// ============================================================================
-// V5.2 Changes (by AI):
-// - Fixed all 8 TypeScript/Linter errors from the user's video.
-// - (Fix 1) `isExpired`: Changed `isNaN(expDatetimeUTC)` to `isNaN(expDatetimeUTC.getTime())` to correctly check for invalid Date objects (Fixes ts(2345)).
-// - (Fix 2) `isSuspiciousIP`: Implemented `AbortController` for fetch timeout, as `timeout` is not a valid `RequestInit` property (Fixes ts(2353)).
-// - (Fix 3) `handleIpSubscription`: Changed `links.join('\n')` to `links.join('\\n')` to fix unterminated string literal (Fixes ts(1002), ts(2554)).
-// - (Fix 4) `handleUserPanel`: Changed `usagePercentage` assignment to return a number, not a string from `.toFixed()`. `toFixed(2)` is now applied only in the HTML output. (Fixes ts(2322)).
-// - All original security features (V5.1) are preserved.
-//
-// Security Enhancements Added (V5 - Ultra Hardened):
-// - Implemented advanced CSRF protection with Double-Submit Cookie pattern.
-// - Added secure logout functionality for admin panel.
-// - Strengthened CSP with 'require-trusted-types-for 'script''.
-// - Activated Scamalytics IP check for WebSocket connections and admin panel.
-// - Added optional ADMIN_HEADER_KEY for extra admin panel authentication.
-// - Added COOP/COEP headers for browser isolation.
-// - Implemented TFA (TOTP) for admin login. (V5.1: Patched validation logic)
-// - Hashed admin session tokens in KV.
-// - Added rate limiting for user panel and subscription paths.
-// - Hidden detailed error messages in VLESS protocol.
-// - All previous security features preserved (CSP+nonce, hidden admin path, IP whitelist, rate limiting, etc.).
-// - No features removed, no disruptions to functionality.
+//    - **اصلاح:** یک تابع کمکی `parseIPv6` اضافه شد.
 // ============================================================================
 
 import { connect } from 'cloudflare:sockets';
@@ -619,11 +613,14 @@ const adminLoginHTML = `<!DOCTYPE html>
         .login-container { background-color: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5); text-align: center; width: 320px; border: 1px solid #333; }
         h1 { color: #ffffff; margin-bottom: 24px; font-weight: 500; }
         form { display: flex; flex-direction: column; }
-        input[type="password"], input[type="text"] { background-color: #2c2c2c; border: 1px solid #444; color: #ffffff; padding: 12px; border-radius: 8px; margin-bottom: 20px; font-size: 16px; }
+        input[type="password"], input[type="text"] { background-color: #2c2c2c; border: 1px solid #444; color: #ffffff; padding: 12px; border-radius: 8px; margin-bottom: 20px; font-size: 16px; box-sizing: border-box; width: 100%; }
         input[type="password"]:focus, input[type="text"]:focus { outline: none; border-color: #007aff; box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.3); }
         button { background-color: #007aff; color: white; border: none; padding: 12px; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: background-color 0.2s; }
         button:hover { background-color: #005ecb; }
         .error { color: #ff3b30; margin-top: 15px; font-size: 14px; }
+        @media (max-width: 400px) {
+            .login-container { width: 90%; padding: 25px; }
+        }
     </style>
 </head>
 <body>
@@ -685,7 +682,8 @@ const adminPanelHTML = `<!DOCTYPE html>
         .input-group .btn-secondary { border-top-left-radius: 0; border-bottom-left-radius: 0; }
         .input-group input { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: none; }
         .input-group select { border-top-left-radius: 0; border-bottom-left-radius: 0; }
-        .search-input { width: 100%; margin-bottom: 16px; }
+        .search-input { width: 100%; margin-bottom: 16px; box-sizing: border-box; }
+        .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; }
         table { width: 100%; border-collapse: collapse; margin-top: 20px; }
         th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         th { color: var(--text-secondary); font-weight: 600; font-size: 12px; text-transform: uppercase; }
@@ -741,10 +739,19 @@ const adminPanelHTML = `<!DOCTYPE html>
         .btn-outline-secondary:hover { background-color: var(--btn-secondary-bg); color: white; border-color: var(--btn-secondary-bg); }
         .checkbox { width: 16px; height: 16px; margin-right: 10px; cursor: pointer; }
         .select-all { cursor: pointer; }
+        
+        /* [V5.4 FIX] Responsive Admin Panel */
         @media (max-width: 768px) {
             .dashboard-stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
-            table { font-size: 12px; }
-            th, td { padding: 8px; }
+            .container { padding: 0 10px; margin: 20px auto; }
+            .card { padding: 16px; }
+            h1 { font-size: 20px; }
+            .form-grid { grid-template-columns: 1fr; } /* Stack create user form */
+            .modal-content { width: 95%; padding: 20px; }
+            .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; } /* Make table wrapper scrollable */
+            table { font-size: 12px; } 
+            th, td { padding: 10px 8px; font-size: 11px; white-space: nowrap; } /* Keep nowrap, wrapper will scroll */
+            .actions-cell { flex-wrap: wrap; justify-content: flex-end; }
         }
     </style>
 </head>
@@ -795,7 +802,8 @@ const adminPanelHTML = `<!DOCTYPE html>
             <h2>User List</h2>
             <input type="text" id="searchInput" class="search-input" placeholder="Search by UUID or Notes...">
             <button id="deleteSelected" class="btn btn-danger" style="margin-bottom: 16px;">Delete Selected</button>
-            <div style="overflow-x: auto;">
+            <!-- [V5.4 FIX] Replaced style="overflow-x: auto;" with class="table-wrapper" for better CSS control -->
+            <div class="table-wrapper">
                  <table>
                     <thead><tr><th><input type="checkbox" id="selectAll" class="select-all checkbox"></th><th>UUID</th><th>Created</th><th>Expiry (Admin Local)</th><th>Expiry (Tehran)</th><th>Status</th><th>Notes</th><th>Data Limit</th><th>Usage</th><th>Actions</th></tr></thead>
                     <tbody id="userList"></tbody>
@@ -826,7 +834,7 @@ const adminPanelHTML = `<!DOCTYPE html>
                 </div>
                 <div class="form-group" style="margin-top: 16px;"><label for="editNotes">Notes</label><input type="text" id="editNotes" name="notes" placeholder="Optional notes"></div>
                 <div class="form-group" style="margin-top: 16px;"><label for="editDataLimit">Data Limit</label><div class="input-group"><input type="number" id="editDataLimit" min="0" step="0.01"><select id="editDataUnit"><option>KB</option><option>MB</option><option>GB</option><option>TB</option><option value="unlimited">Unlimited</option></select></div></div>
-                <div class="form-group" style="margin-top: 16px;"><label><input type="checkbox" id="resetTraffic" name="reset_traffic"> Reset Traffic Usage</label></div>
+                <div class="form-group" style="margin-top: 16px;"><label><input type="checkbox" id="resetTraffic" name="reset_traffic" class="checkbox" style="width: auto; margin-right: 8px;"> Reset Traffic Usage</label></div>
                 <div class="modal-footer">
                     <button type="button" id="modalCancelBtn" class="btn btn-secondary">Cancel</button>
                     <button type="submit" class="btn btn-primary">Save Changes</button>
@@ -1677,6 +1685,18 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
     usagePercentage = Math.min(((userData.traffic_used || 0) / userData.traffic_limit) * 100, 100);
   }
 
+  // [V5.4 FIX] Smart display for usage percentage
+  let usagePercentageDisplay;
+  if (usagePercentage > 0 && usagePercentage < 0.01) {
+    usagePercentageDisplay = '< 0.01%';
+  } else if (usagePercentage === 0) {
+    usagePercentageDisplay = '0%';
+  } else if (usagePercentage === 100) {
+    usagePercentageDisplay = '100%';
+  } else {
+    usagePercentageDisplay = `${usagePercentage.toFixed(2)}%`;
+  }
+
   // The HTML continues exactly as in your original code - I'll include the complete remaining part
   const html = `<!doctype html>
 <html lang="en">
@@ -1808,8 +1828,8 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
     `<div class="card">
       <div class="section-title">
         <h2>📊 Usage Statistics</h2>
-        <!-- [FIX 4 (V5.2) Applied] .toFixed(2) is applied here for display -->
-        <span class="muted">${usagePercentage.toFixed(2)}% Used</span>
+        <!-- [V5.4 FIX] Using smart percentage display -->
+        <span class="muted">${usagePercentageDisplay} Used</span>
       </div>
       <div class="progress-bar">
         <!-- [FIX 4 (V5.2) Applied] .toFixed(2) is applied here for display -->
@@ -1988,9 +2008,10 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
       const size = 280;
       const encodedText = encodeURIComponent(text);
      
+      // [V5.4 FIX] Changed src="https://..." to src="//..."
       qrDisplay.innerHTML = \`
         <div class="qr-container">
-          <img src="https://api.qrserver.com/v1/create-qr-code/?size=\${size}x\${size}&data=\${encodedText}&format=png&ecc=M" 
+          <img src="//api.qrserver.com/v1/create-qr-code/?size=\${size}x\${size}&data=\${encodedText}&format=png&ecc=M" 
                alt="QR Code" 
                style="width:\${size}px;height:\${size}px;display:block;border-radius:8px"
                onload="this.style.opacity=1;showToast('QR code generated successfully', 'success')"
@@ -2381,7 +2402,7 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
     const nonce = generateNonce();
     const headers = new Headers({ 'Content-Type': 'text/html;charset=utf-8' });
     addSecurityHeaders(headers, nonce, {
-        img: 'api.qrserver.com',
+        img: 'api.qrserver.com', // [V5.4] This is now protocol-relative (//) but we keep the domain in CSP
         connect: '*.ip-api.com *.ipapi.co *.ipify.org *.my-ip.io ifconfig.me icanhazip.com *.ipinfo.io dns.google cloudflare-dns.com'
     });
     let finalHtml = html.replace(/CSP_NONCE_PLACEHOLDER/g, nonce);
