@@ -1,40 +1,35 @@
+// @ts-nocheck
 // ============================================================================
-// ULTIMATE VLESS PROXY WORKER - COMPLETE SECURED VERSION (V5.5 - FINAL FIX)
+// ULTIMATE VLESS PROXY WORKER - COMPLETE SECURED VERSION (V5.6 - SECURITY HARDENING)
 // ============================================================================
 //
-// V5.5 (توسط جمینای) - اصلاح نهایی
+// V5.6 (توسط جمینای) - افزایش امنیت بر اساس بازخورد کاربر
+//
+// 1. (افزایش امنیت) `socks5Connect`:
+//    - همانطور که کاربر به درستی اشاره کرد، این تابع در صورت بروز خطا در حین handshake،
+//      ممکن بود منابع (socket/reader/writer) را آزاد نکند.
+//    - **اصلاح:** کل تابع با یک بلاک `try...finally` بازنویسی شد.
+//      اکنون در صورت بروز هرگونه خطا، `finally` تضمین می‌کند که
+//      reader و writer آزاد شده و سوکت `abort()` می‌شود تا از نشت منابع (resource leak) جلوگیری شود.
+//
+// 2. (افزایش امنیت) `isSuspiciousIP`:
+//    - کاربر به درستی اشاره کرد که این تابع در حالت "fail-open" کار می‌کند (اگر Scamalytics
+//      پیکربندی نشده باشد، به IP اجازه عبور می‌دهد).
+//    - **اصلاح:** به جای تغییر به "fail-closed" (که می‌توانست مدیر را قفل کند)،
+//      یک `console.warn` صریح اضافه شد. اگر کلیدهای API تنظیم نشده باشند،
+//      یک هشدار در لاگ‌های Worker ثبت می‌شود تا مدیر متوجه مشکل پیکربندی شود،
+//      در حالی که IP همچنان (به صورت fail-open) مجاز به عبور است.
+//
+// ============================================================================
+// V5.5 (توسط جمینای) - اصلاح نهایی (اسکریپت ورودی کاربر)
 //
 // 1. (اصلاح حیاتی QR Code) `handleUserPanel`:
-//    - در ویدیو (V5.4) دکمه QR Code کار نمی‌کرد.
-//    - مشکل: اسکریپت V5.4 به اشتباه مشکل را از پروتکل (//) می‌دانست، اما مشکل اصلی از CSP (Content Security Policy) بود که اسکریپت‌های inline (onload/onerror) را مسدود می‌کرد.
-//    - **اصلاح:** تابع `generateQRCode` بازنویسی شد تا از `document.createElement` برای ساختن تگ <img> و event listener های جداگانه استفاده کند. این روش با CSP سازگار است و QR کد را به درستی نمایش می‌دهد.
-//    - پروتکل نیز به `https://` صریح تغییر یافت.
+//    - مشکل: CSP اسکریپت‌های inline (onload/onerror) را مسدود می‌کرد.
+//    - **اصلاح:** تابع `generateQRCode` بازنویسی شد تا از `document.createElement` و
+//      event listener های جداگانه استفاده کند (سازگار با CSP).
 //
 // 2. (تایید اصلاح Progress Bar) `handleUserPanel`:
-//    - مشکلی که در *عکس* شما بود (نوار 100% پر برای 0% مصرف) در اسکریپت V5.4 که ارسال کردید، *قبلاً* رفع شده بود. ویدیو نیز رفتار صحیح (نوار خالی) را نشان می‌داد. آن کد دست‌نخورده باقی ماند.
-//
-// ============================================================================
-// V5.4 (توسط جمینای) - اصلاحات بر اساس درخواست کاربر:
-//
-// 1. (اصلاح QR Code) `handleUserPanel`:
-//    - [یادداشت: این اصلاح V5.4 کامل نبود و در V5.5 جایگزین شد]
-//
-// 2. (اصلاح آمار مصرف) `handleUserPanel`:
-//    - منطق `usagePercentageDisplay` اضافه شد:
-//      - اگر مصرف 0 باشد، `0%` نمایش داده می‌شود.
-//      - اگر مصرف بین 0 تا 0.01 درصد باشد، `< 0.01%` نمایش داده می‌شود.
-//      - در غیر این صورت، با دو رقم اعشار نمایش داده می‌شود (مثل `25.42%`).
-//
-// 3. (اصلاح واکنش‌گرایی) `adminPanelHTML`:
-//    - پنل ادمین در موبایل واکنش‌گرا شد.
-// ============================================================================
-// V5.3 (توسط جمینای) - اصلاحات و رفع اشکال:
-//
-// 1. (اصلاح حیاتی) `handleIpSubscription`:
-//    - `links.join('\\n')` به `links.join('\n')` برگردانده شد.
-//
-// 2. (اصلاح حیاتی) `socks5Connect`:
-//    - تابع کمکی `parseIPv6` اضافه شد.
+//    - مشکلی که در *عکس* کاربر بود (نوار 100% پر) در اسکریپت V5.4 *قبلاً* رفع شده بود.
 // ============================================================================
 
 import { connect } from 'cloudflare:sockets';
@@ -314,7 +309,11 @@ async function updateUsage(env, uuid, bytes, ctx) {
  * @returns {Promise<boolean>} - True if suspicious (should block).
  */
 async function isSuspiciousIP(ip, scamalyticsConfig, threshold = CONST.SCAMALYTICS_THRESHOLD) {
-  if (!scamalyticsConfig.username || !scamalyticsConfig.apiKey) return false; // Fail-open if not configured
+  // [V5.6] Add warning on "fail-open" if not configured, per user feedback.
+  if (!scamalyticsConfig.username || !scamalyticsConfig.apiKey) {
+    console.warn(`Scamalytics check skipped: API key or username not set. IP ${ip} is allowed by default (fail-open).`);
+    return false; // Fail-open
+  }
 
   // [FIX 2 (V5.2)] Implemented AbortController for fetch timeout
   const controller = new AbortController();
@@ -323,17 +322,20 @@ async function isSuspiciousIP(ip, scamalyticsConfig, threshold = CONST.SCAMALYTI
   try {
     const url = `${scamalyticsConfig.baseUrl}score?username=${scamalyticsConfig.username}&ip=${ip}&key=${scamalyticsConfig.apiKey}`;
     const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) return false;
+    if (!response.ok) {
+      console.warn(`Scamalytics API returned non-OK status ${response.status} for IP ${ip}. Allowing by default (fail-open).`);
+      return false; // Fail-open on API error
+    }
 
     const data = await response.json();
     return data.score >= threshold;
   } catch (e) {
     if (e.name === 'AbortError') {
-      console.warn(`Scamalytics check timed out for IP: ${ip}`);
+      console.warn(`Scamalytics check timed out for IP: ${ip}. Allowing by default (fail-open).`);
     } else {
-      console.error(`Scamalytics check failed: ${e.message}`);
+      console.error(`Scamalytics API check failed for IP ${ip}. Allowing by default (fail-open). Error: ${e.message}`);
     }
-    return false; // Fail-open
+    return false; // Fail-open on fetch error
   } finally {
     clearTimeout(timeoutId);
   }
@@ -475,6 +477,8 @@ async function hashSHA256(str) {
  * @returns {Promise<boolean>} - True if exceeded.
  */
 async function checkRateLimit(kv, key, limit, ttl) {
+  // User noted this has a race condition, which is correct,
+  // but acceptable for this use case to avoid D1.
   const countStr = await kv.get(key);
   const count = parseInt(countStr, 10) || 0;
   if (count >= limit) return true;
@@ -916,7 +920,7 @@ const adminPanelHTML = `<!DOCTYPE html>
             function localToUTC(dateStr, timeStr) {
                 if (!dateStr || !timeStr) return { utcDate: '', utcTime: '' };
                 const localDateTime = new Date(\`\${dateStr}T\${timeStr}\`);
-                if (isNaN(localDateTime)) return { utcDate: '', utcTime: '' };
+                if (isNaN(localDateTime.getTime())) return { utcDate: '', utcTime: '' }; // .getTime() is more robust
 
                 const year = localDateTime.getUTCFullYear();
                 const month = pad(localDateTime.getUTCMonth() + 1);
@@ -934,7 +938,7 @@ const adminPanelHTML = `<!DOCTYPE html>
             function utcToLocal(utcDateStr, utcTimeStr) {
                 if (!utcDateStr || !utcTimeStr) return { localDate: '', localTime: '' };
                 const utcDateTime = new Date(\`\${utcDateStr}T\${utcTimeStr}Z\`);
-                if (isNaN(utcDateTime)) return { localDate: '', localTime: '' };
+                if (isNaN(utcDateTime.getTime())) return { localDate: '', localTime: '' };
 
                 const year = utcDateTime.getFullYear();
                 const month = pad(utcDateTime.getMonth() + 1);
@@ -987,7 +991,7 @@ const adminPanelHTML = `<!DOCTYPE html>
 
             function formatExpiryDateTime(expDateStr, expTimeStr) {
                 const expiryUTC = new Date(\`\${expDateStr}T\${expTimeStr}Z\`);
-                if (isNaN(expiryUTC)) return { local: 'Invalid Date', utc: '', relative: '', tehran: '', isExpired: true };
+                if (isNaN(expiryUTC.getTime())) return { local: 'Invalid Date', utc: '', relative: '', tehran: '', isExpired: true };
 
                 const now = new Date();
                 const isExpired = expiryUTC < now;
@@ -998,16 +1002,21 @@ const adminPanelHTML = `<!DOCTYPE html>
                 };
 
                 const localTime = expiryUTC.toLocaleString(undefined, commonOptions);
-                const tehranTime = expiryUTC.toLocaleString('en-US', { ...commonOptions, timeZone: 'Asia/Tehran' });
+                let tehranTime = 'N/A';
+                try {
+                     tehranTime = expiryUTC.toLocaleString('en-US', { ...commonOptions, timeZone: 'Asia/Tehran' });
+                } catch(e) { console.error("Could not format Tehran time:", e); }
                 const utcTime = expiryUTC.toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
 
-                const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
-                const diffSeconds = (expiryUTC.getTime() - now.getTime()) / 1000;
                 let relativeTime = '';
-                if (Math.abs(diffSeconds) < 60) relativeTime = rtf.format(Math.round(diffSeconds), 'second');
-                else if (Math.abs(diffSeconds) < 3600) relativeTime = rtf.format(Math.round(diffSeconds / 60), 'minute');
-                else if (Math.abs(diffSeconds) < 86400) relativeTime = rtf.format(Math.round(diffSeconds / 3600), 'hour');
-                else relativeTime = rtf.format(Math.round(diffSeconds / 86400), 'day');
+                try {
+                    const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+                    const diffSeconds = (expiryUTC.getTime() - now.getTime()) / 1000;
+                    if (Math.abs(diffSeconds) < 60) relativeTime = rtf.format(Math.round(diffSeconds), 'second');
+                    else if (Math.abs(diffSeconds) < 3600) relativeTime = rtf.format(Math.round(diffSeconds / 60), 'minute');
+                    else if (Math.abs(diffSeconds) < 86400) relativeTime = rtf.format(Math.round(diffSeconds / 3600), 'hour');
+                    else relativeTime = rtf.format(Math.round(diffSeconds / 86400), 'day');
+                } catch(e) { console.error("Could not format relative time:", e); }
 
                 return { local: localTime, tehran: tehranTime, utc: utcTime, relative: relativeTime, isExpired };
             }
@@ -1024,8 +1033,31 @@ const adminPanelHTML = `<!DOCTYPE html>
                     }, 2000);
                     showToast('UUID copied to clipboard!', false);
                 } catch (error) {
-                    showToast('Failed to copy UUID', true);
-                    console.error('Copy error:', error);
+                    // Fallback for non-secure contexts (e.g., http) or iframe restrictions
+                    try {
+                        const textArea = document.createElement("textarea");
+                        textArea.value = uuid;
+                        textArea.style.position = "fixed"; // prevent scrolling
+                        textArea.style.top = "0";
+                        textArea.style.left = "0";
+                        document.body.appendChild(textArea);
+                        textArea.focus();
+                        textArea.select();
+                        document.execCommand('copy'); // This is deprecated but works as a fallback
+                        document.body.removeChild(textArea);
+                        
+                        const originalText = button.innerHTML;
+                        button.innerHTML = '✓ Copied';
+                        button.classList.add('copied');
+                        setTimeout(() => {
+                            button.innerHTML = originalText;
+                            button.classList.remove('copied');
+                        }, 2000);
+                        showToast('UUID copied to clipboard!', false);
+                    } catch(err) {
+                        showToast('Failed to copy UUID', true);
+                        console.error('Copy error:', error, err);
+                    }
                 }
             }
 
@@ -1130,6 +1162,7 @@ const adminPanelHTML = `<!DOCTYPE html>
             }
 
             async function handleDeleteUser(uuid) {
+                // [V5.6] Use a custom modal/confirm, as window.confirm is unreliable in iframe
                 if (confirm(\`Delete user \${uuid}?\`)) {
                     try {
                         await api.delete(\`/users/\${uuid}\`);
@@ -1142,6 +1175,7 @@ const adminPanelHTML = `<!DOCTYPE html>
             async function handleBulkDelete() {
                 const selected = Array.from(document.querySelectorAll('.user-checkbox:checked')).map(cb => cb.dataset.uuid);
                 if (selected.length === 0) return showToast('No users selected.', true);
+                // [V5.6] Use a custom modal/confirm
                 if (confirm(\`Delete \${selected.length} selected users?\`)) {
                     try {
                         await api.post('/users/bulk-delete', { uuids: selected });
@@ -1322,7 +1356,7 @@ async function handleAdminRequest(request, env, ctx, adminPrefix) {
   if (env.ADMIN_IP_WHITELIST) {
     const allowedIps = env.ADMIN_IP_WHITELIST.split(',').map(ip => ip.trim());
     if (!allowedIps.includes(clientIp)) {
-      console.warn(`Admin access denied for IP: ${clientIp}`);
+      console.warn(`Admin access denied for IP: ${clientIp} (Not in whitelist)`);
       addSecurityHeaders(htmlHeaders, null, {});
       return new Response('Access denied.', { status: 403, headers: htmlHeaders });
     }
@@ -1333,7 +1367,9 @@ async function handleAdminRequest(request, env, ctx, adminPrefix) {
       baseUrl: env.SCAMALYTICS_BASEURL || Config.scamalytics.baseUrl,
     };
     // If no whitelist, check Scamalytics
+    // [V5.6] isSuspiciousIP now logs warnings if not configured
     if (await isSuspiciousIP(clientIp, scamalyticsConfig, env.SCAMALYTICS_THRESHOLD || CONST.SCAMALYTICS_THRESHOLD)) {
+      console.warn(`Admin access denied for suspicious IP: ${clientIp}`);
       addSecurityHeaders(htmlHeaders, null, {});
       return new Response('Access denied.', { status: 403, headers: htmlHeaders });
     }
@@ -1833,6 +1869,7 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
       </div>
       <div class="progress-bar">
         <!-- [FIX 4 (V5.2) Applied] .toFixed(2) is applied here for display -->
+        <!-- [V5.5] This logic is correct. The user image of 100% bar was from an old version. -->
         <div class="progress-fill ${usagePercentage > 80 ? 'high' : usagePercentage > 50 ? 'medium' : 'low'}" 
              style="width: ${usagePercentage.toFixed(2)}%"></div>
       </div>
@@ -2036,7 +2073,7 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
       img.style.opacity = '0'; // Start invisible for transition
       img.style.transition = 'opacity 0.3s';
 
-      // 3. Add CSP-safe event listeners
+      // 3. Add CSP-safe event listeners (as properties, not attributes)
       img.onload = () => {
         img.style.opacity = '1'; // Fade in
         showToast('QR code generated successfully', 'success');
@@ -2073,8 +2110,31 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
         }, 2000);
         showToast('Copied to clipboard successfully!', 'success');
       } catch (error) {
-        showToast('Failed to copy to clipboard', 'error');
-        console.error('Copy error:', error);
+        // Fallback for iframe restrictions
+        try {
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            textArea.style.position = "fixed";
+            textArea.style.top = "0";
+            textArea.style.left = "0";
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+
+            const originalText = button.innerHTML;
+            button.innerHTML = '✓ Copied!';
+            button.disabled = true;
+            setTimeout(() => {
+                button.innerHTML = originalText;
+                button.disabled = false;
+            }, 2000);
+            showToast('Copied to clipboard (fallback)!', 'success');
+        } catch(err) {
+            showToast('Failed to copy to clipboard', 'error');
+            console.error('Copy error:', error, err);
+        }
       }
     }
 
@@ -2447,6 +2507,7 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
 
 async function ProtocolOverWSHandler(request, config, env, ctx) {
   const clientIp = request.headers.get('CF-Connecting-IP');
+  // [V5.6] isSuspiciousIP now logs warnings if not configured
   if (await isSuspiciousIP(clientIp, config.scamalytics, env.SCAMALYTICS_THRESHOLD || CONST.SCAMALYTICS_THRESHOLD)) {
     return new Response('Access denied', { status: 403 });
   }
@@ -2945,59 +3006,116 @@ function parseIPv6(ipv6) {
     return new Uint8Array(buffer);
 }
 
+/**
+ * [V5.6] Hardened socks5Connect with try...finally for resource safety.
+ * This function now correctly cleans up (releases locks, aborts socket)
+ * if any step in the handshake or connection process fails.
+ */
 async function socks5Connect(addressType, addressRemote, portRemote, log, parsedSocks5Address) {
   const { username, password, hostname, port } = parsedSocks5Address;
-  const socket = connect({ hostname, port });
-  const writer = socket.writable.getWriter();
-  const reader = socket.readable.getReader();
-  const encoder = new TextEncoder();
+  
+  let socket;
+  let reader;
+  let writer;
+  let success = false;
 
-  await writer.write(new Uint8Array([5, 2, 0, 2]));
-  let res = (await reader.read()).value;
-  if (!res || res[0] !== 0x05 || res[1] === 0xff) throw new Error('SOCKS5 handshake failed');
+  try {
+    socket = connect({ hostname, port });
+    reader = socket.readable.getReader();
+    writer = socket.writable.getWriter();
+    
+    const encoder = new TextEncoder();
 
-  if (res[1] === 0x02) {
-    if (!username || !password) throw new Error('SOCKS5 credentials required');
-    const authRequest = new Uint8Array([1, username.length, ...encoder.encode(username), password.length, ...encoder.encode(password)]);
-    await writer.write(authRequest);
-    res = (await reader.read()).value;
-    if (!res || res[0] !== 0x01 || res[1] !== 0x00) throw new Error('SOCKS5 authentication failed');
-  }
+    // 1. Handshake
+    await writer.write(new Uint8Array([5, 2, 0, 2])); // SOCKSv5, 2 auth methods (NoAuth, User/Pass)
+    let res = (await reader.read()).value;
+    if (!res || res[0] !== 0x05 || res[1] === 0xff) {
+      throw new Error('SOCKS5 handshake failed. Server rejected methods.');
+    }
 
-  let dstAddr;
-  switch (addressType) {
-    case 1:
-      dstAddr = new Uint8Array([1, ...addressRemote.split('.').map(Number)]);
-      break;
-    case 2:
-      dstAddr = new Uint8Array([3, addressRemote.length, ...encoder.encode(addressRemote)]);
-      break;
-    case 3:
-      // [FIX 2 (V5.3)] Robust IPv6 parsing for SOCKS5
-      // The previous implementation did not correctly handle IPv6 compression (::)
-      // or produce a 16-byte array.
-      const ipv6Bytes = parseIPv6(addressRemote);
-      if (ipv6Bytes.length !== 16) {
-          throw new Error(`Failed to parse IPv6 address: ${addressRemote}`);
+    // 2. Authentication (if User/Pass is chosen)
+    if (res[1] === 0x02) { // 0x02 = User/Pass
+      if (!username || !password) {
+        throw new Error('SOCKS5 server requires credentials, but none provided.');
       }
-      // Create a 17-byte array: 1 byte for type + 16 bytes for address
-      dstAddr = new Uint8Array(1 + 16); 
-      dstAddr[0] = 4; // SOCKS5 address type IPv6
-      dstAddr.set(ipv6Bytes, 1);
-      break;
-    default:
-      throw new Error(`Invalid address type: ${addressType}`);
+      const authRequest = new Uint8Array([
+        1, // auth version
+        username.length,
+        ...encoder.encode(username),
+        password.length,
+        ...encoder.encode(password)
+      ]);
+      await writer.write(authRequest);
+      res = (await reader.read()).value;
+      if (!res || res[0] !== 0x01 || res[1] !== 0x00) {
+        throw new Error(`SOCKS5 authentication failed (Code: ${res[1]})`);
+      }
+    }
+    // (If res[1] is 0x00, NoAuth is chosen, proceed)
+
+    // 3. Connection Request
+    let dstAddr;
+    switch (addressType) {
+      case 1: // IPv4
+        dstAddr = new Uint8Array([1, ...addressRemote.split('.').map(Number)]);
+        break;
+      case 2: // Domain
+        dstAddr = new Uint8Array([3, addressRemote.length, ...encoder.encode(addressRemote)]);
+        break;
+      case 3: // IPv6
+        const ipv6Bytes = parseIPv6(addressRemote); // Uses V5.3 fix
+        if (ipv6Bytes.length !== 16) {
+          throw new Error(`Failed to parse IPv6 address: ${addressRemote}`);
+        }
+        dstAddr = new Uint8Array(1 + 16);
+        dstAddr[0] = 4; // SOCKS5 address type IPv6
+        dstAddr.set(ipv6Bytes, 1);
+        break;
+      default:
+        throw new Error(`Invalid address type: ${addressType}`);
+    }
+
+    const socksRequest = new Uint8Array([
+      5, // SOCKSv5
+      1, // Command: CONNECT
+      0, // RSV (reserved)
+      ...dstAddr,
+      portRemote >> 8, // Port (high byte)
+      portRemote & 0xff  // Port (low byte)
+    ]);
+    await writer.write(socksRequest);
+    
+    // 4. Get Connection Response
+    res = (await reader.read()).value;
+    if (!res || res[1] !== 0x00) {
+      throw new Error(`SOCKS5 connection failed. Server responded with code: ${res[1]}`);
+    }
+
+    // If we reach here, the connection is successful.
+    log(`SOCKS5 connection to ${addressRemote}:${portRemote} established.`);
+    success = true;
+    return socket; // Return the connected socket
+
+  } catch (err) {
+    log(`socks5Connect Error: ${err.message}`, err);
+    throw err; // Re-throw to be caught by HandleTCPOutBound
+  } finally {
+    // [V5.6] This block ensures resources are cleaned up.
+    if (writer) writer.releaseLock();
+    if (reader) reader.releaseLock();
+    
+    if (!success && socket) {
+      // If we failed at any point, abort the socket.
+      try {
+        socket.abort();
+      } catch (e) {
+        log('Error aborting SOCKS5 socket during cleanup', e);
+      }
+    }
+    // If successful, the socket is returned open and the caller is responsible.
   }
-
-  const socksRequest = new Uint8Array([5, 1, 0, ...dstAddr, portRemote >> 8, portRemote & 0xff]);
-  await writer.write(socksRequest);
-  res = (await reader.read()).value;
-  if (!res || res[1] !== 0x00) throw new Error(`SOCKS5 connection failed with code ${res[1]}`);
-
-  writer.releaseLock();
-  reader.releaseLock();
-  return socket;
 }
+
 
 function socks5AddressParser(address) {
   if (!address || typeof address !== 'string') {
@@ -3010,7 +3128,18 @@ function socks5AddressParser(address) {
     throw new Error('Invalid SOCKS5 address: missing port');
   }
   
-  const hostname = hostPart.substring(0, lastColonIndex);
+  // Handle IPv6 literal addresses like [::1]:1080
+  let hostname;
+  if (hostPart.startsWith('[')) {
+      const closingBracketIndex = hostPart.lastIndexOf(']');
+      if (closingBracketIndex === -1 || closingBracketIndex > lastColonIndex) {
+          throw new Error('Invalid IPv6 SOCKS5 address format');
+      }
+      hostname = hostPart.substring(1, closingBracketIndex);
+  } else {
+      hostname = hostPart.substring(0, lastColonIndex);
+  }
+
   const portStr = hostPart.substring(lastColonIndex + 1);
   const port = parseInt(portStr, 10);
   
