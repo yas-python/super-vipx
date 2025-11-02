@@ -1,40 +1,40 @@
 // ============================================================================
-// ULTIMATE VLESS PROXY WORKER - COMPLETE SECURED VERSION (V5.4 - REFINED)
+// ULTIMATE VLESS PROXY WORKER - COMPLETE SECURED VERSION (V5.5 - FINAL FIX)
 // ============================================================================
 //
+// V5.5 (توسط جمینای) - اصلاح نهایی
+//
+// 1. (اصلاح حیاتی QR Code) `handleUserPanel`:
+//    - در ویدیو (V5.4) دکمه QR Code کار نمی‌کرد.
+//    - مشکل: اسکریپت V5.4 به اشتباه مشکل را از پروتکل (//) می‌دانست، اما مشکل اصلی از CSP (Content Security Policy) بود که اسکریپت‌های inline (onload/onerror) را مسدود می‌کرد.
+//    - **اصلاح:** تابع `generateQRCode` بازنویسی شد تا از `document.createElement` برای ساختن تگ <img> و event listener های جداگانه استفاده کند. این روش با CSP سازگار است و QR کد را به درستی نمایش می‌دهد.
+//    - پروتکل نیز به `https://` صریح تغییر یافت.
+//
+// 2. (تایید اصلاح Progress Bar) `handleUserPanel`:
+//    - مشکلی که در *عکس* شما بود (نوار 100% پر برای 0% مصرف) در اسکریپت V5.4 که ارسال کردید، *قبلاً* رفع شده بود. ویدیو نیز رفتار صحیح (نوار خالی) را نشان می‌داد. آن کد دست‌نخورده باقی ماند.
+//
+// ============================================================================
 // V5.4 (توسط جمینای) - اصلاحات بر اساس درخواست کاربر:
 //
 // 1. (اصلاح QR Code) `handleUserPanel`:
-//    - در ویدیو، QR Code لود نمی‌شد. این می‌تواند به دلیل خطای Mixed Content (بارگیری https در صفحه http) باشد.
-//    - **اصلاح:** URL فراخوانی `api.qrserver.com` از `https://` به `//` (پروتکل-نسبی) تغییر یافت تا با پروتکل صفحه‌ی اصلی (http یا https) مطابقت داشته باشد.
+//    - [یادداشت: این اصلاح V5.4 کامل نبود و در V5.5 جایگزین شد]
 //
 // 2. (اصلاح آمار مصرف) `handleUserPanel`:
-//    - کاربر درخواست آمار دقیق‌تر و "هوشمندتر" را داشت. نمایش "0.00%" برای مصرف‌های بسیار کم (مانند 500KB از 1TB) گیج‌کننده بود.
-//    - **اصلاح:** منطق `usagePercentageDisplay` اضافه شد:
+//    - منطق `usagePercentageDisplay` اضافه شد:
 //      - اگر مصرف 0 باشد، `0%` نمایش داده می‌شود.
 //      - اگر مصرف بین 0 تا 0.01 درصد باشد، `< 0.01%` نمایش داده می‌شود.
 //      - در غیر این صورت، با دو رقم اعشار نمایش داده می‌شود (مثل `25.42%`).
 //
 // 3. (اصلاح واکنش‌گرایی) `adminPanelHTML`:
-//    - پنل ادمین در موبایل (طبق ویدیو) واکنش‌گرا نبود و جدول باعث اسکرول کل صفحه می‌شد.
-//    - **اصلاح:**
-//      - یک کلاس `.table-wrapper` با `overflow-x: auto` دور جدول اضافه شد.
-//      - قوانین CSS در `@media (max-width: 768px)` اضافه و تقویت شد تا:
-//        - فرم "Create User" ('.form-grid') به صورت ستونی (1fr) درآید.
-//        - پدینگ و مارجین کانتینر و کارت‌ها برای موبایل بهینه‌سازی شود.
-//        - خود جدول (`.table-wrapper`) به‌صورت افقی اسکرول بخورد و کل صفحه را خراب نکند.
-//
-// - تمام قابلیت‌های امنیتی و عملکردی نسخه V5.3 حفظ شده‌اند.
+//    - پنل ادمین در موبایل واکنش‌گرا شد.
 // ============================================================================
 // V5.3 (توسط جمینای) - اصلاحات و رفع اشکال:
 //
 // 1. (اصلاح حیاتی) `handleIpSubscription`:
-//    - در نسخه 5.2، `links.join('\n')` به `links.join('\\n')` تغییر کرده بود.
-//    - **اصلاح:** ما آن را به `links.join('\n')` برگرداندیم که رفتار صحیح است.
+//    - `links.join('\\n')` به `links.join('\n')` برگردانده شد.
 //
 // 2. (اصلاح حیاتی) `socks5Connect`:
-//    - منطق رسیدگی به `addressType === 3` (آدرس‌های IPv6) ناقص بود.
-//    - **اصلاح:** یک تابع کمکی `parseIPv6` اضافه شد.
+//    - تابع کمکی `parseIPv6` اضافه شد.
 // ============================================================================
 
 import { connect } from 'cloudflare:sockets';
@@ -2003,22 +2003,54 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
       clientUrls: ${JSON.stringify(clientUrls)}
     };
 
+    // =================================================
+    // [V5.5 QR CODE FIX]
+    // The original function used innerHTML with inline 'onload' and 'onerror' attributes.
+    // This was blocked by the Content-Security-Policy (CSP) which forbids 'unsafe-inline' scripts.
+    // The new function creates elements programmatically and attaches event listeners,
+    // which is CSP-safe and allows the QR code to load correctly.
+    // =================================================
     function generateQRCode(text) {
       const qrDisplay = document.getElementById('qr-display');
+      qrDisplay.innerHTML = ''; // Clear previous QR code or "Click to..." text
+      
       const size = 280;
       const encodedText = encodeURIComponent(text);
-     
-      // [V5.4 FIX] Changed src="https://..." to src="//..."
-      qrDisplay.innerHTML = \`
-        <div class="qr-container">
-          <img src="//api.qrserver.com/v1/create-qr-code/?size=\${size}x\${size}&data=\${encodedText}&format=png&ecc=M" 
-               alt="QR Code" 
-               style="width:\${size}px;height:\${size}px;display:block;border-radius:8px"
-               onload="this.style.opacity=1;showToast('QR code generated successfully', 'success')"
-               onerror="this.parentElement.innerHTML='<p class=muted style=color:var(--danger)>QR generation failed. Please copy the link manually.</p>'"
-               style="opacity:0;transition:opacity 0.3s" />
-        </div>
-      \`;
+
+      // 1. Create container
+      const container = document.createElement('div');
+      container.className = 'qr-container';
+
+      // 2. Create image element
+      const img = document.createElement('img');
+      
+      // [FIX V5.5] Force HTTPS. Protocol-relative (//) was part of a misdiagnosis (V5.4).
+      // Forcing HTTPS is safer and works since the panel is served over HTTPS.
+      img.src = \`https://api.qrserver.com/v1/create-qr-code/?size=\${size}x\${size}&data=\${encodedText}&format=png&ecc=M\`;
+      
+      img.alt = 'QR Code';
+      img.style.width = \`\${size}px\`;
+      img.style.height = \`\${size}px\`;
+      img.style.display = 'block';
+      img.style.borderRadius = '8px';
+      img.style.opacity = '0'; // Start invisible for transition
+      img.style.transition = 'opacity 0.3s';
+
+      // 3. Add CSP-safe event listeners
+      img.onload = () => {
+        img.style.opacity = '1'; // Fade in
+        showToast('QR code generated successfully', 'success');
+      };
+
+      img.onerror = () => {
+        // Show a clean error message inside the main display
+        qrDisplay.innerHTML = '<p class="muted" style="color:var(--danger)">QR generation failed. Please copy the link manually.</p>';
+        showToast('Failed to generate QR code', 'error');
+      };
+
+      // 4. Append elements to the DOM
+      container.appendChild(img);
+      qrDisplay.appendChild(container);
     }
 
     function showToast(message, type = 'success') {
@@ -2402,7 +2434,7 @@ function handleUserPanel(userID, hostName, proxyAddress, userData) {
     const nonce = generateNonce();
     const headers = new Headers({ 'Content-Type': 'text/html;charset=utf-8' });
     addSecurityHeaders(headers, nonce, {
-        img: 'api.qrserver.com', // [V5.4] This is now protocol-relative (//) but we keep the domain in CSP
+        img: 'api.qrserver.com', // [V5.5] Domain for QR code
         connect: '*.ip-api.com *.ipapi.co *.ipify.org *.my-ip.io ifconfig.me icanhazip.com *.ipinfo.io dns.google cloudflare-dns.com'
     });
     let finalHtml = html.replace(/CSP_NONCE_PLACEHOLDER/g, nonce);
